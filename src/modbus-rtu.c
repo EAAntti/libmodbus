@@ -366,6 +366,7 @@ static ssize_t _modbus_rtu_send(modbus_t *ctx, const uint8_t *req, int req_lengt
     } else {
 #endif
         size = write(ctx->s, req, req_length);
+        usleep(ctx_rtu->onebyte_time * req_length);
 #if HAVE_DECL_TIOCM_RTS
     }
 #endif

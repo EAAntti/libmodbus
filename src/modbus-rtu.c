@@ -13,6 +13,7 @@
 #include <unistd.h>
 #endif
 #include <assert.h>
+#include <time.h>
 
 #include "modbus-private.h"
 
@@ -331,11 +332,11 @@ static void _modbus_rtu_apply_interframe_delay(int interframe_delay, struct time
         return;
     }
     if (us < interframe_delay) {
-        timestruct delay;
+        struct timespec delay;
         int delay_us = (interframe_delay - us);
         delay.tv_sec = (time_t)(delay_us / 1000000);
         delay.tv_nsec = (long)((delay_us % 1000000) * 1000);
-        nanosleep(delay);
+        nanosleep(&delay, NULL);
     }
 }
 

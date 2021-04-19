@@ -327,11 +327,15 @@ static void _modbus_rtu_apply_interframe_delay(int interframe_delay, struct time
     us += (now.tv_sec - last->tv_sec) * 1000000;
 
     /* check suseconds_t overflow (timepoints too distant) */
-    if (us < 0) {
+    if ((us < 0) || (interframe_delay < 0)) {
         return;
     }
     if (us < interframe_delay) {
-        usleep(interframe_delay - us);
+        timestruct delay;
+        int delay_us = (interframe_delay - us);
+        delay.tv_sec = (time_t)(delay_us / 1000000);
+        delay.tv_nsec = (long)((delay_us % 1000000) * 1000);
+        nanosleep(delay);
     }
 }
 
@@ -1065,7 +1069,7 @@ int modbus_rtu_set_interframe_delay(modbus_t *ctx, int us)
         if (us == MODBUS_RTU_INTERFRAME_AUTO) {
             ctx_rtu->interframe_delay = _modbus_rtu_t35(ctx_rtu->baud, ctx_rtu->data_bit, ctx_rtu->stop_bit, ctx_rtu->parity);
             return 0;
-        } else if (0 <= us && us < 1000000) {
+        } else if (0 <= us && us <= 10000000) {
             ctx_rtu->interframe_delay = us;
             return 0;
         }

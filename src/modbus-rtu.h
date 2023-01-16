@@ -18,6 +18,7 @@ MODBUS_BEGIN_DECLS
 
 MODBUS_API modbus_t* modbus_new_rtu(const char *device, int baud, char parity,
                                     int data_bit, int stop_bit);
+MODBUS_API modbus_t* modbus_new_rtu_queue(int tx_queue_size, uint8_t *tx_queue_data, uint8_t *tx_queue_stat, pthread_mutex_t *tx_queue_mutex, pthread_cond_t *tx_queue_wr, pthread_cond_t *tx_queue_rd, int *tx_queue_cnt, int *tx_queue_ri, int *tx_queue_wi, int rx_queue_size, uint8_t *rx_queue_data, uint8_t *rx_queue_stat, pthread_mutex_t *rx_queue_mutex, pthread_cond_t *rx_queue_wr, pthread_cond_t *rx_queue_rd, int *rx_queue_cnt, int *rx_queue_ri, int *rx_queue_wi);
 
 #define MODBUS_RTU_RS232 0
 #define MODBUS_RTU_RS485 1

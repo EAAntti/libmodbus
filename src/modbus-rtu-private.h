@@ -21,6 +21,8 @@
 #include <termios.h>
 #endif
 
+#include <pthread.h>
+
 #define _MODBUS_RTU_HEADER_LENGTH      1
 #define _MODBUS_RTU_PRESET_REQ_LENGTH  6
 #define _MODBUS_RTU_PRESET_RSP_LENGTH  2
@@ -76,5 +78,32 @@ typedef struct _modbus_rtu {
     int interframe_delay;
     struct timeval last_frame_at;
 } modbus_rtu_t;
+
+typedef struct _modbus_rtu_queue {
+    int tx_queue_size;
+    uint8_t *tx_queue_data;
+    uint8_t *tx_queue_stat;
+    pthread_mutex_t *tx_queue_mutex;
+    pthread_cond_t *tx_queue_wr;
+    pthread_cond_t *tx_queue_rd;
+    int *tx_queue_cnt;
+    int *tx_queue_ri;
+    int *tx_queue_wi;
+
+    int rx_queue_size;
+    uint8_t *rx_queue_data;
+    uint8_t *rx_queue_stat;
+    pthread_mutex_t *rx_queue_mutex;
+    pthread_cond_t *rx_queue_wr;
+    pthread_cond_t *rx_queue_rd;
+    int *rx_queue_cnt;
+    int *rx_queue_ri;
+    int *rx_queue_wi;
+    
+    /* To handle many slaves on the same link */
+    int confirmation_to_ignore;
+    int interframe_delay;
+    struct timeval last_frame_at;
+} modbus_rtu_queue_t;
 
 #endif /* MODBUS_RTU_PRIVATE_H */

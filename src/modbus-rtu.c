@@ -1065,14 +1065,26 @@ int modbus_rtu_get_serial_mode(modbus_t *ctx)
 
 int modbus_rtu_set_interframe_delay(modbus_t *ctx, int us)
 {
-    if (ctx != NULL && ctx->backend->backend_type == _MODBUS_BACKEND_TYPE_RTU) {
-        modbus_rtu_t *ctx_rtu = ctx->backend_data;
-        if (us == MODBUS_RTU_INTERFRAME_AUTO) {
-            ctx_rtu->interframe_delay = _modbus_rtu_t35(ctx_rtu->baud, ctx_rtu->data_bit, ctx_rtu->stop_bit, ctx_rtu->parity);
-            return 0;
-        } else if (0 <= us && us <= 10000000) {
-            ctx_rtu->interframe_delay = us;
-            return 0;
+    if (ctx != NULL) {
+        if (ctx->backend->backend_type == _MODBUS_BACKEND_TYPE_RTU) {
+            modbus_rtu_t *ctx_rtu = ctx->backend_data;
+            if (us == MODBUS_RTU_INTERFRAME_AUTO) {
+                ctx_rtu->interframe_delay = _modbus_rtu_t35(ctx_rtu->baud, ctx_rtu->data_bit, ctx_rtu->stop_bit, ctx_rtu->parity);
+                return 0;
+            } else if (0 <= us && us <= 10000000) {
+                ctx_rtu->interframe_delay = us;
+                return 0;
+            }
+        }
+        else if (ctx->backend->backend_type == _MODBUS_BACKEND_TYPE_RTU_QUEUE) {
+            modbus_rtu_queue_t *ctx_rtu = ctx->backend_data;
+            if (us == MODBUS_RTU_INTERFRAME_AUTO) {
+                ctx_rtu->interframe_delay = _modbus_rtu_t35(1200, 8, 2, 'O');
+                return 0;
+            } else if (0 <= us && us <= 10000000) {
+                ctx_rtu->interframe_delay = us;
+                return 0;
+            }
         }
     }
     errno = EINVAL;
@@ -1422,6 +1434,249 @@ modbus_t* modbus_new_rtu(const char *device,
 
     ctx_rtu->confirmation_to_ignore = FALSE;
     ctx_rtu->interframe_delay = _modbus_rtu_t35(baud, data_bit, stop_bit, parity);
+    ctx_rtu->last_frame_at.tv_sec = 0;
+    ctx_rtu->last_frame_at.tv_usec = 0;
+
+    return ctx;
+}
+
+static void _modbus_rtu_queue_close(modbus_t *ctx) {}
+
+static int _modbus_rtu_queue_flush(modbus_t *ctx)
+{
+    modbus_rtu_queue_t *ctx_rtu = ctx->backend_data;
+
+    pthread_mutex_lock(ctx_rtu->tx_queue_mutex);
+    pthread_mutex_lock(ctx_rtu->rx_queue_mutex);
+    
+    *ctx_rtu->tx_queue_cnt = 0;
+    *ctx_rtu->tx_queue_ri = 0;
+    *ctx_rtu->tx_queue_wi = 0;
+
+    *ctx_rtu->rx_queue_cnt = 0;
+    *ctx_rtu->rx_queue_ri = 0;
+    *ctx_rtu->rx_queue_wi = 0;
+
+    pthread_mutex_unlock(ctx_rtu->tx_queue_mutex);
+    pthread_mutex_unlock(ctx_rtu->rx_queue_mutex);
+
+    return 0;
+}
+
+static ssize_t _modbus_rtu_queue_send(modbus_t *ctx, const uint8_t *req, int req_length)
+{
+
+    struct timespec abs_wait_time;
+    int rc = 0;
+
+    modbus_rtu_queue_t *ctx_rtu = ctx->backend_data;
+
+    if (ctx_rtu->interframe_delay > 0) {
+        _modbus_rtu_apply_interframe_delay(ctx_rtu->interframe_delay, &ctx_rtu->last_frame_at);
+    }
+
+    pthread_mutex_lock(ctx_rtu->tx_queue_mutex);
+     
+    while (ctx_rtu->tx_queue_size-(*ctx_rtu->tx_queue_cnt)<req_length) {
+        pthread_cond_wait(ctx_rtu->tx_queue_rd, ctx_rtu->tx_queue_mutex);
+    }
+
+    for (int i=0; i<req_length; i++) {
+        *ctx_rtu->tx_queue_wi += 1;
+        *ctx_rtu->tx_queue_wi %= ctx_rtu->tx_queue_size;
+        ctx_rtu->tx_queue_stat[*ctx_rtu->tx_queue_wi] = 0;
+        ctx_rtu->tx_queue_data[*ctx_rtu->tx_queue_wi] = req[i];
+    }
+    ctx_rtu->tx_queue_stat[*ctx_rtu->tx_queue_wi] = 1; // Tx packet ready
+
+    *ctx_rtu->tx_queue_cnt += req_length;
+    
+    pthread_cond_signal(ctx_rtu->tx_queue_wr);
+    pthread_mutex_unlock(ctx_rtu->tx_queue_mutex);
+
+    clock_gettime(CLOCK_REALTIME, &abs_wait_time);
+    abs_wait_time.tv_sec += 5;
+     
+    pthread_mutex_lock(ctx_rtu->tx_queue_mutex);
+
+    while ((*ctx_rtu->tx_queue_cnt!=0) && (rc==0)) {
+        rc = pthread_cond_timedwait(ctx_rtu->tx_queue_rd, ctx_rtu->tx_queue_mutex, &abs_wait_time);
+    }
+
+    pthread_mutex_unlock(ctx_rtu->tx_queue_mutex);
+
+    if (ctx_rtu->interframe_delay > 0) {
+        _modbus_rtu_update_last_frame_at(&ctx_rtu->last_frame_at);
+    }
+    
+    if (rc==0) {
+        return req_length;
+    } else {
+        _modbus_rtu_queue_flush(ctx);
+        return -1;
+    }
+
+}
+
+static ssize_t _modbus_rtu_queue_recv(modbus_t *ctx, uint8_t *rsp, int rsp_length)
+{
+    modbus_rtu_queue_t *ctx_rtu = ctx->backend_data;
+
+    pthread_mutex_lock(ctx_rtu->rx_queue_mutex);
+     
+    while (*ctx_rtu->rx_queue_cnt<rsp_length) {
+        pthread_cond_wait(ctx_rtu->rx_queue_wr, ctx_rtu->rx_queue_mutex);
+    }
+
+    for (int i=0; i<rsp_length; i++) {
+        *ctx_rtu->rx_queue_ri += 1;
+        *ctx_rtu->rx_queue_ri %= ctx_rtu->rx_queue_size;
+        rsp[i] = ctx_rtu->rx_queue_data[*ctx_rtu->rx_queue_ri];
+    }
+
+    *ctx_rtu->rx_queue_cnt -= rsp_length;
+    
+    pthread_cond_signal(ctx_rtu->rx_queue_rd);
+
+    pthread_mutex_unlock(ctx_rtu->rx_queue_mutex);
+
+    if (ctx_rtu->interframe_delay > 0) {
+        _modbus_rtu_update_last_frame_at(&ctx_rtu->last_frame_at);
+    }
+
+    return (ssize_t)rsp_length;
+}
+
+
+static int _modbus_rtu_queue_connect(modbus_t *ctx)
+{
+
+    ctx->s = open("/dev/null", O_RDWR);
+
+    modbus_rtu_queue_t *ctx_rtu = ctx->backend_data;
+
+    pthread_mutex_lock(ctx_rtu->tx_queue_mutex);
+    pthread_mutex_lock(ctx_rtu->rx_queue_mutex);
+    
+    *ctx_rtu->tx_queue_cnt = 0;
+    *ctx_rtu->tx_queue_ri = 0;
+    *ctx_rtu->tx_queue_wi = 0;
+
+    *ctx_rtu->rx_queue_cnt = 0;
+    *ctx_rtu->rx_queue_ri = 0;
+    *ctx_rtu->rx_queue_wi = 0;
+
+    pthread_mutex_unlock(ctx_rtu->tx_queue_mutex);
+    pthread_mutex_unlock(ctx_rtu->rx_queue_mutex);
+
+    return 0;
+}
+
+static struct timespec _modbus_rtu_queue_timespec_add_timeval(struct timespec a, struct timeval b)
+{
+    a.tv_sec += b.tv_sec;
+    a.tv_nsec += (1000*b.tv_usec);
+    while (a.tv_nsec >= 1000000000) {
+        a.tv_nsec -= 1000000000;
+        a.tv_sec++;
+    }
+    return a;
+}
+
+static int _modbus_rtu_queue_select(modbus_t *ctx, fd_set *rset,
+                              struct timeval *tv, int length_to_read)
+{
+
+    modbus_rtu_queue_t *ctx_rtu = ctx->backend_data;
+    struct timespec now;
+    struct timespec abs_wait_time;
+    int rc = 0;
+ 
+    clock_gettime(CLOCK_REALTIME, &now);
+    abs_wait_time = _modbus_rtu_queue_timespec_add_timeval(now, *tv);
+     
+    pthread_mutex_lock(ctx_rtu->rx_queue_mutex);
+
+    while ((*ctx_rtu->rx_queue_cnt<length_to_read) && (rc==0)) {
+        rc = pthread_cond_timedwait(ctx_rtu->rx_queue_wr, ctx_rtu->rx_queue_mutex, &abs_wait_time);
+    }
+
+    pthread_mutex_unlock(ctx_rtu->rx_queue_mutex);
+
+    if (rc==0) {
+        return length_to_read;
+    } else {
+        _modbus_rtu_queue_flush(ctx);
+        return -1;
+    }
+
+}
+
+const modbus_backend_t _modbus_rtu_queue_backend = {
+    _MODBUS_BACKEND_TYPE_RTU_QUEUE,
+    _MODBUS_RTU_HEADER_LENGTH,
+    _MODBUS_RTU_CHECKSUM_LENGTH,
+    MODBUS_RTU_MAX_ADU_LENGTH,
+    _modbus_set_slave,
+    _modbus_rtu_build_request_basis,
+    _modbus_rtu_build_response_basis,
+    _modbus_rtu_prepare_response_tid,
+    _modbus_rtu_send_msg_pre,
+    _modbus_rtu_queue_send,
+    _modbus_rtu_receive,
+    _modbus_rtu_queue_recv,
+    _modbus_rtu_check_integrity,
+    _modbus_rtu_pre_check_confirmation,
+    _modbus_rtu_queue_connect,
+    _modbus_rtu_queue_close,
+    _modbus_rtu_queue_flush,
+    _modbus_rtu_queue_select,
+    _modbus_rtu_free
+};
+
+modbus_t* modbus_new_rtu_queue(int tx_queue_size, uint8_t *tx_queue_data, uint8_t *tx_queue_stat, pthread_mutex_t *tx_queue_mutex, pthread_cond_t *tx_queue_wr, pthread_cond_t *tx_queue_rd, int *tx_queue_cnt, int *tx_queue_ri, int *tx_queue_wi,
+                               int rx_queue_size, uint8_t *rx_queue_data, uint8_t *rx_queue_stat, pthread_mutex_t *rx_queue_mutex, pthread_cond_t *rx_queue_wr, pthread_cond_t *rx_queue_rd, int *rx_queue_cnt, int *rx_queue_ri, int *rx_queue_wi)
+{
+    modbus_t *ctx;
+    modbus_rtu_queue_t *ctx_rtu;
+
+    ctx = (modbus_t *)malloc(sizeof(modbus_t));
+    if (ctx == NULL) {
+        return NULL;
+    }
+
+    _modbus_init_common(ctx);
+    ctx->backend = &_modbus_rtu_queue_backend;
+    ctx->backend_data = (modbus_rtu_queue_t *)malloc(sizeof(modbus_rtu_queue_t));
+    if (ctx->backend_data == NULL) {
+        modbus_free(ctx);
+        errno = ENOMEM;
+        return NULL;
+    }
+    ctx_rtu = (modbus_rtu_queue_t *)ctx->backend_data;
+
+    ctx_rtu->tx_queue_size = tx_queue_size;
+    ctx_rtu->tx_queue_data = tx_queue_data;
+    ctx_rtu->tx_queue_stat = tx_queue_stat;
+    ctx_rtu->tx_queue_mutex = tx_queue_mutex;
+    ctx_rtu->tx_queue_wr = tx_queue_wr;
+    ctx_rtu->tx_queue_rd = tx_queue_rd;
+    ctx_rtu->tx_queue_cnt = tx_queue_cnt;
+    ctx_rtu->tx_queue_ri = tx_queue_ri;
+    ctx_rtu->tx_queue_wi = tx_queue_wi;
+
+    ctx_rtu->rx_queue_size = rx_queue_size;
+    ctx_rtu->rx_queue_data = rx_queue_data;
+    ctx_rtu->rx_queue_stat = rx_queue_stat;
+    ctx_rtu->rx_queue_mutex = rx_queue_mutex;
+    ctx_rtu->rx_queue_wr = rx_queue_wr;
+    ctx_rtu->rx_queue_rd = rx_queue_rd;
+    ctx_rtu->rx_queue_cnt = rx_queue_cnt;
+    ctx_rtu->rx_queue_ri = rx_queue_ri;
+    ctx_rtu->rx_queue_wi = rx_queue_wi;
+    
+    ctx_rtu->confirmation_to_ignore = FALSE;
+    ctx_rtu->interframe_delay = 0;
     ctx_rtu->last_frame_at.tv_sec = 0;
     ctx_rtu->last_frame_at.tv_usec = 0;
 

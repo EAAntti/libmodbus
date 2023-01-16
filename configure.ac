@@ -36,6 +36,11 @@ AC_SYS_LARGEFILE
 AC_CONFIG_MACRO_DIR([m4])
 AM_SILENT_RULES([yes])
 
+ACX_PTHREAD
+LIBS="$PTHREAD_LIBS $LIBS"
+CFLAGS="$CFLAGS $PTHREAD_CFLAGS"
+CC="$PTHREAD_CC"
+
 LIBMODBUS_VERSION_MAJOR=libmodbus_version_major
 LIBMODBUS_VERSION_MINOR=libmodbus_version_minor
 LIBMODBUS_VERSION_MICRO=libmodbus_version_micro
@@ -92,6 +97,7 @@ AC_CHECK_HEADERS([ \
     termios.h \
     time.h \
     unistd.h \
+    pthread.h \
 ])
 
 # Check whether to build docs / install man pages

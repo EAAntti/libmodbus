@@ -25,14 +25,12 @@ libmodbus_la_SOURCES = \
 libmodbus_la_LDFLAGS = -no-undefined \
         -version-info $(LIBMODBUS_LT_VERSION_INFO)
 
-libmodbus_la_LIBADD = -lpthread
-
 if OS_WIN32
-libmodbus_la_LIBADD += -lwsock32
+libmodbus_la_LIBADD = -lwsock32
 endif
 
 if OS_QNX
-libmodbus_la_LIBADD += -lsocket
+libmodbus_la_LIBADD = -lsocket
 endif
 
 # Header files to install

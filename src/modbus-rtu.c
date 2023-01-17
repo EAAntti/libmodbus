@@ -1440,25 +1440,28 @@ modbus_t* modbus_new_rtu(const char *device,
     return ctx;
 }
 
-static void _modbus_rtu_queue_close(modbus_t *ctx) {}
+static void _modbus_rtu_queue_close(modbus_t *ctx)
+{
+    if (ctx->s != -1) {
+        close(ctx->s);
+        ctx->s = -1;
+    }
+}
 
 static int _modbus_rtu_queue_flush(modbus_t *ctx)
 {
-    modbus_rtu_queue_t *ctx_rtu = ctx->backend_data;
+    modbus_rtu_queue_t *ctx_rtu = (modbus_rtu_queue_t *)ctx->backend_data;
 
     pthread_mutex_lock(ctx_rtu->tx_queue_mutex);
     pthread_mutex_lock(ctx_rtu->rx_queue_mutex);
-    
     *ctx_rtu->tx_queue_cnt = 0;
     *ctx_rtu->tx_queue_ri = 0;
     *ctx_rtu->tx_queue_wi = 0;
-
     *ctx_rtu->rx_queue_cnt = 0;
     *ctx_rtu->rx_queue_ri = 0;
     *ctx_rtu->rx_queue_wi = 0;
-
-    pthread_mutex_unlock(ctx_rtu->tx_queue_mutex);
     pthread_mutex_unlock(ctx_rtu->rx_queue_mutex);
+    pthread_mutex_unlock(ctx_rtu->tx_queue_mutex);
 
     return 0;
 }
@@ -1553,7 +1556,7 @@ static int _modbus_rtu_queue_connect(modbus_t *ctx)
 
     ctx->s = open("/dev/null", O_RDWR);
 
-    modbus_rtu_queue_t *ctx_rtu = ctx->backend_data;
+    modbus_rtu_queue_t *ctx_rtu = ( modbus_rtu_queue_t *)ctx->backend_data;
 
     pthread_mutex_lock(ctx_rtu->tx_queue_mutex);
     pthread_mutex_lock(ctx_rtu->rx_queue_mutex);
@@ -1566,8 +1569,8 @@ static int _modbus_rtu_queue_connect(modbus_t *ctx)
     *ctx_rtu->rx_queue_ri = 0;
     *ctx_rtu->rx_queue_wi = 0;
 
-    pthread_mutex_unlock(ctx_rtu->tx_queue_mutex);
     pthread_mutex_unlock(ctx_rtu->rx_queue_mutex);
+    pthread_mutex_unlock(ctx_rtu->tx_queue_mutex);
 
     return 0;
 }

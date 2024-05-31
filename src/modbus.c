@@ -1139,6 +1139,97 @@ int modbus_read_input_bits(modbus_t *ctx, int addr, int nb, uint8_t *dest)
         return nb;
 }
 
+/* Reads IO status */
+static int read_io_status_packed(modbus_t *ctx, int function,
+                          int addr, int nb, uint8_t *dest)
+{
+    int rc;
+    int req_length;
+
+    uint8_t req[_MIN_REQ_LENGTH];
+    uint8_t rsp[MAX_MESSAGE_LENGTH];
+
+    req_length = ctx->backend->build_request_basis(ctx, function, addr, nb, req);
+
+    rc = send_msg(ctx, req, req_length);
+    if (rc > 0) {
+        int i;
+        int pos = 0;
+        int offset;
+        int offset_end;
+
+        rc = _modbus_receive_msg(ctx, rsp, MSG_CONFIRMATION);
+        if (rc == -1)
+            return -1;
+
+        rc = check_confirmation(ctx, req, rsp, rc);
+        if (rc == -1)
+            return -1;
+
+        offset = ctx->backend->header_length + 2;
+        offset_end = offset + rc;
+        for (i = offset; i < offset_end; i++) {
+            /* copy byte to destination */
+            dest[pos++] = rsp[i];
+        }
+    }
+
+    return rc;
+
+}
+
+/* Reads the boolean status of bits and sets the array elements
+   in the destination to TRUE or FALSE (single bits). */
+int modbus_read_bits_packed(modbus_t *ctx, int addr, int nb, uint8_t *dest)
+{
+    int rc;
+
+    if (ctx == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (nb > MODBUS_MAX_READ_BITS) {
+        if (ctx->debug) {
+            fprintf(stderr,
+                    "ERROR Too many bits requested (%d > %d)\n",
+                    nb, MODBUS_MAX_READ_BITS);
+        }
+        errno = EMBMDATA;
+        return -1;
+    }
+
+    rc = read_io_status_packed(ctx, MODBUS_FC_READ_COILS, addr, nb, dest);
+
+    return rc;
+}
+
+
+/* Same as modbus_read_bits but reads the remote device input table */
+int modbus_read_input_bits_packed(modbus_t *ctx, int addr, int nb, uint8_t *dest)
+{
+    int rc;
+
+    if (ctx == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (nb > MODBUS_MAX_READ_BITS) {
+        if (ctx->debug) {
+            fprintf(stderr,
+                    "ERROR Too many discrete inputs requested (%d > %d)\n",
+                    nb, MODBUS_MAX_READ_BITS);
+        }
+        errno = EMBMDATA;
+        return -1;
+    }
+
+    rc = read_io_status_packed(ctx, MODBUS_FC_READ_DISCRETE_INPUTS, addr, nb, dest);
+
+    return rc;
+}
+
 /* Reads the data from a remove device and put that data into an array */
 static int read_registers(modbus_t *ctx, int function, int addr, int nb,
                           uint16_t *dest)
